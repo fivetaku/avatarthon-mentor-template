@@ -25,6 +25,14 @@ def main():
     src = Path(a.src).expanduser()
     if not src.is_file():
         sys.exit(f"영상 파일이 없습니다: {src}")
+    try:
+        dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(src)],
+                                   capture_output=True, text=True, timeout=60).stdout.strip() or 0)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        dur = 0
+    if dur > 210:
+        print(f"영상이 {int(dur // 60)}분 {int(dur % 60)}초입니다. 앞 3분 30초만 남깁니다. "
+              "보여 주고 싶은 장면이 뒤에 있으면 먼저 잘라서 다시 실행하세요.")
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp.mp4")

@@ -18,39 +18,26 @@ import json
 import re
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 HOME = Path.home()
 
-# 바꿔 넣을 꼬리표. check_submission.py가 이 꼬리표는 개인정보로 보지 않는다.
-SCRUB_RULES = [
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S), "[개인키 삭제]"),
-    (re.compile(r"_\|WARNING:-DO-NOT-SHARE-THIS[^\s\"']*"), "[로블록스 쿠키 삭제]"),
-    (re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}"), "[키 삭제]"),
-    (re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{40,}"), "[키 삭제]"),
-    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}"), "[키 삭제]"),
-    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[키 삭제]"),
-    (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"), "[키 삭제]"),
-    (re.compile(r"\bxai-[A-Za-z0-9]{20,}"), "[키 삭제]"),
-    (re.compile(r"\bBearer\s+[A-Za-z0-9._-]{20,}"), "Bearer [키 삭제]"),
-    (re.compile(r"(?i)\b(api[_-]?key|token|secret|password|passwd)\b(\s*[:=]\s*)[\"']?[^\s\"']{8,}"), r"\1\2[삭제]"),
-    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "[이메일]"),
-    (re.compile(r"(?<!\d)\d{6}-?[1-4]\d{6}(?!\d)"), "[주민번호]"),
-    (re.compile(r"(?<!\d)(?:\d{4}[- ]){3}\d{4}(?!\d)"), "[카드번호]"),
-    (re.compile(r"(?<!\d)01[016789][-. ]?\d{3,4}[-. ]?\d{4}(?!\d)"), "[전화번호]"),
-    (re.compile(r"/Users/[^/\s]+/"), "/Users/[사용자]/"),
-    (re.compile(r"/home/[^/\s]+/"), "/home/[사용자]/"),
-    (re.compile(r"([A-Za-z]:\\Users\\)[^\\\s]+\\"), r"\1[사용자]\\"),
-    (re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])"), "[IP]"),
-]
-SYSTEM_BLOCK = re.compile(r"<(system-reminder|command-[a-z-]+|local-command-[a-z-]+)>.*?</\1>", re.S)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_submission import scrub as _scrub_rules  # noqa: E402  지우는 규칙 = 검사하는 규칙
+
+# 사람이 쓴 말이 아닌 블록: 시스템 안내, 슬래시 명령, `!` 셸 명령과 그 출력, 훅 출력, Codex 지침·환경 안내
+SYSTEM_BLOCK = re.compile(
+    r"<(system-reminder|command-[a-z-]+|local-command-[a-z-]+|bash-input|bash-stdout|bash-stderr|"
+    r"user-prompt-submit-hook|user_instructions|INSTRUCTIONS|environment_context|turn_aborted)>.*?</\1>", re.S)
 
 
 def scrub(text):
-    text = SYSTEM_BLOCK.sub("", text)
-    for pat, rep in SCRUB_RULES:
-        text = pat.sub(rep, text)
-    return text.strip()
+    return _scrub_rules(SYSTEM_BLOCK.sub("", text)).strip()
+
+
+def nfc(s):
+    return unicodedata.normalize("NFC", s)
 
 
 def _first_cwd(path, limit=40):
@@ -72,7 +59,7 @@ def _first_cwd(path, limit=40):
 
 
 def find(game_dir, days):
-    game = str(Path(game_dir).expanduser().resolve())
+    game = nfc(str(Path(game_dir).expanduser().resolve()))
     since = time.time() - days * 86400
     roots = [("claude-code", HOME / ".claude" / "projects", "*/*.jsonl"),
              ("codex", HOME / ".codex" / "sessions", "**/rollout-*.jsonl")]
@@ -87,6 +74,7 @@ def find(game_dir, days):
             except OSError:
                 continue
             cwd = _first_cwd(p)
+            cwd = nfc(cwd) if cwd else cwd
             if cwd and (cwd == game or cwd.startswith(game.rstrip("/\\") + ("\\" if "\\" in game else "/"))):
                 found.append((p.stat().st_mtime, tool, p))
     found.sort()
@@ -100,7 +88,8 @@ def find(game_dir, days):
 
 def _claude_turns(obj):
     kind = obj.get("type")
-    if kind not in ("user", "assistant") or obj.get("isMeta") or obj.get("isSidechain"):
+    if kind not in ("user", "assistant") or obj.get("isMeta") or obj.get("isSidechain") \
+            or obj.get("isCompactSummary") or obj.get("isVisibleInTranscriptOnly"):
         return []
     msg = obj.get("message") or {}
     content = msg.get("content")
@@ -175,7 +164,8 @@ def export(paths, out):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     written = []
-    for i, p in enumerate(paths, 1):
+    start = len(list(out.glob("session-*.md")))
+    for i, p in enumerate(paths, start + 1):
         p = Path(p)
         tool = detect_tool(p)
         body = to_markdown(p, tool)
@@ -207,7 +197,12 @@ def main():
         out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
         n = len(list(out.glob("session-*.md"))) + 1
         dest = out / f"session-{n:02d}-{a.tool}.md"
-        body = scrub(Path(a.file).read_text(encoding="utf-8", errors="replace"))
+        raw = Path(a.file).read_bytes()
+        enc = "utf-16" if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig"
+        text = raw.decode(enc, errors="replace")
+        if "\x00" in text or text.count("\ufffd") > max(5, len(text) // 50):
+            sys.exit(f"{a.file}의 글자가 깨졌습니다. 메모장에서 UTF-8로 다시 저장한 뒤 실행하세요.")
+        body = scrub(text)
         dest.write_text(f"# 대화 기록 {n} ({a.tool}, 붙여넣기)\n\n{body}\n", encoding="utf-8")
         print(f"저장: {dest}")
     elif a.cmd == "scrub":

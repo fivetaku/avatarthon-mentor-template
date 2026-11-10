@@ -1,0 +1,12 @@
+# 원본 영상·임시 파일은 올리지 않는다(제출용은 scripts/prepare_video.py가 video/play.mp4로 만든다)
+*.mov
+*.mkv
+*.avi
+*.tmp.mp4
+raw/
+.env
+.env.*
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc

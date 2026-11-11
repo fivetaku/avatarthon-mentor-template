@@ -4,9 +4,10 @@ PROCESS.md·SUBMISSION.json 초안을 만든 뒤 제출물 검사까지 돌린�
 
 - 원본 폴더는 읽기만 한다. 옮기거나 지우지 않고 복사만 한다.
 - 글 파일은 복사하면서 개인정보·키를 지운다(check_submission.py와 같은 규칙).
-- 이미지는 사진 정보(EXIF·찍은 위치)를 빼고 복사한다(PNG·JPEG).
+- 이미지는 사진 정보(EXIF·XMP·찍은 위치)를 빼고 복사한다(PNG·JPEG·WebP).
+- FBX·GLB 안의 내 컴퓨터 경로(사용자 이름)는 같은 길이의 _로 바꿔 복사한다.
 - 받지 않는 파일(.blend·.rbxl·.rbxm·압축·실행 파일·숨은 파일 등)은 복사하지 않고 이유를 알려 준다.
-- 이미 있는 파일은 덮어쓰지 않는다. 바꾸려면 --force.
+- 이미 있는 파일은 덮어쓰지 않는다. 바꾸려면 --force(직접 쓴 PROCESS.md는 --force여도 덮어쓰지 않는다).
 - 올리기(git push)는 하지 않는다. 멘토가 확인한 뒤 직접 올린다.
 
 사용
@@ -37,7 +38,8 @@ WHY_NOT = {
     ".rbxl": "바이너리 플레이스는 받지 않는다 — Studio에서 File > Save to File As로 .rbxlx(XML)로 저장하세요",
     ".rbxm": "바이너리 모델은 받지 않는다 — Studio에서 Save to File로 .rbxmx(XML)로 저장하세요",
 }
-SECRET_NAMES = (".env", "id_rsa", "id_ed25519", ".pem", ".key", ".p12", "credentials", "secret", "token", "cookie")
+SECRET_NAMES = (".env", "id_rsa", "id_ed25519", ".pem", ".key", ".p12", "credential", "secret", "token", "cookie",
+                "api-key", "api_key", "apikey", "opencloud", "open-cloud", "open_cloud", "roblosecurity", "password")
 
 PROCESS_HEADER = "# 만든 과정\n"
 
@@ -64,26 +66,53 @@ def strip_png(data):
 
 
 def strip_jpeg(data):
+    """APP1(EXIF·XMP)·APP2 MPF·APP13(IPTC)·COM을 빼고, 첫 그림이 끝나는 EOI 뒤(두 번째 그림 등)는 버린다."""
     if not data.startswith(b"\xff\xd8"):
         return data
     out, pos = [b"\xff\xd8"], 2
     while pos + 4 <= len(data):
         if data[pos] != 0xFF:
-            return data  # 구조가 예상과 다르면 손대지 않는다(검사기가 따로 본다)
+            pos += 1   # 세그먼트 사이 쓰레기·채움 바이트는 건너뛴다
+            continue
         marker = data[pos + 1]
         if marker == 0xFF:
             pos += 1
             continue
-        if marker == 0xDA:  # 그림 데이터 시작 — 나머지는 그대로
-            out.append(data[pos:])
+        if marker == 0xDA:  # 그림 데이터 시작 — 첫 EOI까지만 둔다
+            end = data.find(b"\xff\xd9", pos + 2)
+            out.append(data[pos:] if end < 0 else data[pos:end + 2])
             return b"".join(out)
         n = int.from_bytes(data[pos + 2:pos + 4], "big")
         seg = data[pos:pos + 2 + n]
-        # APP1(EXIF·XMP), APP13(IPTC), COM(주석)을 뺀다. APP0·APP2(색 정보)·APP14는 둔다
-        if marker not in (0xE1, 0xED, 0xFE):
+        drop = marker in (0xE1, 0xED, 0xFE) or (marker == 0xE2 and seg[4:8] == b"MPF\x00")
+        if not drop:
             out.append(seg)
         pos += 2 + n
     return data
+
+
+def strip_webp(data):
+    """WebP의 EXIF·XMP 조각을 빼고 VP8X 표시와 전체 크기를 고친다."""
+    if not (data.startswith(b"RIFF") and data[8:12] == b"WEBP"):
+        return data
+    out, pos = [], 12
+    while pos + 8 <= len(data):
+        kind = data[pos:pos + 4]
+        n = int.from_bytes(data[pos + 4:pos + 8], "little")
+        chunk = data[pos:pos + 8 + n + (n & 1)]
+        if kind == b"VP8X" and len(chunk) >= 9:
+            chunk = chunk[:8] + bytes([chunk[8] & ~0x0C & 0xFF]) + chunk[9:]   # EXIF(0x08)·XMP(0x04) 표시 끄기
+        if kind not in (b"EXIF", b"XMP "):
+            out.append(chunk)
+        pos += 8 + n + (n & 1)
+    body = b"WEBP" + b"".join(out)
+    return b"RIFF" + len(body).to_bytes(4, "little") + body
+
+
+def scrub_user_paths(data):
+    """바이너리 3D 파일 속 내 컴퓨터 경로의 사용자 이름을 같은 길이의 '_'로 바꾼다(파일 구조 유지)."""
+    return cs.USER_PATH_BYTES.sub(lambda m: m.group(0)[:m.start(1) - m.start(0)] + b"_" * len(m.group(1))
+                                  if m.group(1).lower() not in (b"shared", b"public") else m.group(0), data)
 
 
 def clean_image(data, ext):
@@ -91,6 +120,8 @@ def clean_image(data, ext):
         return strip_png(data)
     if ext in (".jpg", ".jpeg"):
         return strip_jpeg(data)
+    if ext == ".webp":
+        return strip_webp(data)
     return data
 
 
@@ -178,6 +209,8 @@ def copy_one(src, dest, top, force):
         data = cs.scrub(text, in_game=(top != "sessions" and ext not in TEXT_NOTE)).encode("utf-8")
         if text.endswith("\n") and not data.endswith(b"\n"):
             data += b"\n"
+    elif ext in cs.MODELS_BIN:
+        data = scrub_user_paths(raw)
     else:
         data = raw
     if dest.exists():
@@ -218,7 +251,7 @@ def process_draft(repo, tool):
 ## 어떤 도구로 만들었나
 {tool_line}
 
-(여기에 기본 파트 조립, Blender, VARCO를 각각 어디에 썼는지)
+(여기에 VARCO, Blender, 스튜디오 기본 파트를 각각 어디에 썼는지)
 
 게임 파일:
 {game_list or "- (여기에 game/ 파일)"}
@@ -256,10 +289,10 @@ def ask(question):
 
 def write_process(repo, tool, force, dry):
     path = repo / "PROCESS.md"
-    if path.exists() and not force:
+    if path.exists():
         old = cs.read_text_file(path) or ""
         if not is_template_process(old) and not ask("PROCESS.md에 이미 쓴 내용이 있습니다. 초안으로 덮어쓸까요?"):
-            print("PROCESS.md: 이미 쓴 내용이 있어 그대로 둠(덮어쓰려면 --force)")
+            print("PROCESS.md: 이미 쓴 내용이 있어 그대로 둠(새 초안이 필요하면 PROCESS.md를 지우고 다시 실행)")
             return
     if dry:
         print("PROCESS.md: 초안을 만들 예정")

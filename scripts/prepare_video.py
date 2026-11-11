@@ -14,6 +14,12 @@ from pathlib import Path
 
 LIMIT = 45 * 1024 * 1024
 
+for _stream in (sys.stdout, sys.stderr):   # 윈도우 콘솔(cp949)에서 멈추지 않게
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 
 def main():
     ap = argparse.ArgumentParser()

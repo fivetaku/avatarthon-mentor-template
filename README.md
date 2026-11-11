@@ -8,8 +8,8 @@ VARCO나 Blender로 로블록스 게임과 에셋을 직접 만들고, 직접 �
 
 ## 흐름
 
-1. **만들기**: 로블록스 스튜디오에서 게임을 만들고 소품(에셋)을 만듭니다.
-   기본은 스튜디오의 기본 파트를 조립하는 것이고, 선택으로 Blender 메시나 VARCO 3D를 씁니다.
+1. **만들기**: 로블록스 스튜디오에서 게임을 만들고, 게임에 놓을 소품(에셋)을 VARCO 3D로 만듭니다.
+   Blender 메시는 선택입니다. 스튜디오 기본 파트로 조립한 소품도 함께 넣어도 됩니다.
 2. **플레이**: 직접 해 보고 1~3분 플레이 영상을 찍습니다. 말로 설명하며 찍어 주세요.
 3. **정리**: 이 키트로 결과물을 나누고 검사해 공개 레포로 올립니다.
 4. **등록**: 레포 주소를 구글 폼에 붙입니다.
@@ -60,13 +60,13 @@ VARCO나 Blender로 로블록스 게임과 에셋을 직접 만들고, 직접 �
    ```
 2. 결과물 폴더를 넣고 정리 스크립트를 돌립니다. 원본 폴더는 건드리지 않고 복사만 합니다.
    ```
-   python3 scripts/organize.py ~/로블록스결과물 --notes ~/작업메모 --video ~/플레이.mov \
-       --nickname 닉네임 --tool VARCO --game-url https://www.roblox.com/games/... --one-line "한 줄 소개"
+   python3 scripts/organize.py ~/로블록스결과물 --notes ~/작업메모 --video ~/플레이.mov --nickname 닉네임 --tool VARCO --game-url https://www.roblox.com/games/... --one-line "한 줄 소개"
    ```
    - 파일을 확장자로 나눠 `game/` `assets/` `sessions/`에 복사합니다. `--notes` 폴더는 통째로 `sessions/`로 갑니다.
    - 글 파일의 개인정보·키를 지우고, 이미지의 사진 정보(찍은 위치 등)를 뺍니다.
    - `.blend`처럼 받지 않는 파일은 복사하지 않고 이유를 알려 줍니다.
-   - `PROCESS.md`, `SUBMISSION.json` 초안을 만듭니다. 이미 쓴 내용이 있으면 덮어쓰지 않습니다(덮어쓰려면 `--force`).
+   - `PROCESS.md`, `SUBMISSION.json` 초안을 만듭니다. 이미 쓴 `PROCESS.md`는 덮어쓰지 않습니다.
+   - 효과음(`.wav` `.mp3` `.ogg`)은 받지 않아 복사하지 않습니다. 소리가 중요하면 플레이 영상에 담아 주세요.
    - 마지막에 검사를 돌립니다. 무엇을 할지만 보려면 `--dry-run`.
 3. `PROCESS.md`의 "(여기에 …)" 칸을 직접 채웁니다. 에셋 표의 "어떻게 만들었나·어디에 쓰나"도 채워 주세요.
 4. 다시 검사합니다. `python3 scripts/check_submission.py .`가 "통과"라고 나와야 합니다.
@@ -74,6 +74,7 @@ VARCO나 Blender로 로블록스 게임과 에셋을 직접 만들고, 직접 �
    ```
    git add -A && git commit -m "아바타톤 멘토 과제 제출" && git push
    ```
+   템플릿을 ZIP으로 받아 git이 없는 폴더라면 먼저 `git init -b main`을 하고, GitHub에서 빈 공개 레포를 만들어 `git remote add origin <주소>` 뒤 `git push -u origin main`으로 올립니다.
 6. 레포 주소를 구글 폼에 붙입니다. GitHub의 Actions 탭에서 "제출물 검사"가 초록색인지도 확인해 주세요.
 
 Claude Code나 Codex가 있으면 이 폴더에서 "아바타톤 제출해줘"라고 말해도 됩니다. 위 순서대로 정리하고, 올리기 전에 한 번 확인을 받습니다.

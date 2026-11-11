@@ -165,14 +165,21 @@ def export(paths, out):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     written = []
-    start = len(list(out.glob("session-*.md")))
-    for i, p in enumerate(paths, start + 1):
+    existing = list(out.glob("session-*.md"))
+    have = {x.read_text(encoding="utf-8", errors="replace").split("\n\n", 2)[-1] for x in existing}
+    i = len(existing)
+    for p in paths:
         p = Path(p)
         tool = detect_tool(p)
         body = to_markdown(p, tool)
         if not body.strip():
             print(f"건너뜀(대화 없음): {p.name}", file=sys.stderr)
             continue
+        if body in have:
+            print(f"건너뜀(이미 내보낸 대화): {p.name}", file=sys.stderr)
+            continue
+        have.add(body)
+        i += 1
         dest = out / f"session-{i:02d}-{tool}.md"
         dest.write_text(f"# 대화 기록 {i} ({tool})\n\n"
                         "개인정보·키·내 컴퓨터 경로는 지웠다. 도구 실행 결과는 옮기지 않았다.\n\n" + body,

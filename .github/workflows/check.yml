@@ -7,7 +7,7 @@ permissions:
 jobs:
   check:
     # 템플릿 레포 자체와, 템플릿으로 레포를 만들 때 생기는 빈 "Initial commit"에서는 돌지 않는다
-    if: github.repository != 'fivetaku/avatarthon-mentor-template' && github.event.head_commit.message != 'Initial commit'
+    if: github.repository != 'fivetaku/avatarthon-mentor-template' && !(github.event.head_commit.message == 'Initial commit' && github.run_number == 1)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

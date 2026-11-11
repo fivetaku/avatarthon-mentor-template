@@ -23,6 +23,7 @@ from pathlib import Path
 
 HOME = Path.home()
 
+sys.dont_write_bytecode = True   # scripts/__pycache__를 만들지 않는다(검사에 걸린다)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_submission import scrub as _scrub_rules  # noqa: E402  지우는 규칙 = 검사하는 규칙
 

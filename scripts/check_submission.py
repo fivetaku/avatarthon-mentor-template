@@ -4,10 +4,12 @@
 검사 항목
   1. 구조: 허용된 폴더·확장자만 있는지, 이중 확장자·보이지 않는 글자·심볼릭 링크·실행 권한이 없는지
   2. 파일 정체: 확장자와 실제 내용(매직 바이트)이 맞는지, 이미지 끝에 다른 파일이 붙어 있지 않은지
+     3D 파일(.glb·.fbx)도 머리 부분과 크기 정보를 확인한다
   3. 영상: video/play.mp4 하나만, MP4 상자 구조를 끝까지 따라가 덧붙인 데이터·큰 부가 상자가 없는지
   4. 크기: 파일당·전체 상한
   5. 개인정보·비밀값: 이메일·전화·주민번호·카드·계좌·주소·API 키·토큰·로블록스 쿠키·내 컴퓨터 경로
-  6. SUBMISSION.json·PROCESS.md 필수 항목
+  6. 필수 제출물: game/·assets/(둘 다 비어 있지 않게), video/play.mp4, sessions/, PROCESS.md,
+     SUBMISSION.json(tool은 "VARCO"·"Blender"·"기타" 중 하나)
 
 개인정보 규칙(RULES)은 scripts/export_sessions.py도 그대로 가져다 쓴다(지우는 규칙과 찾는 규칙이 같다).
 
@@ -31,17 +33,28 @@ MAX_SIDE_BOXES = 256 * 1024  # mp4의 free·uuid·udta 같은 부가 상자 합�
 
 TEXT_CODE = {".luau", ".lua", ".json", ".toml", ".md", ".txt", ".yml", ".yaml", ".rbxlx", ".rbxmx", ".csv"}
 IMAGES = {".png", ".jpg", ".jpeg", ".webp"}
+# 에셋: 이미지(텍스처·원화), 3D 모델, 로블록스 모델(XML), 설명 글.
+# .blend(Blender 원본)와 .rbxm(로블록스 바이너리 모델)은 받지 않는다 — 안을 글로 읽어 검사할 수 없고,
+# .blend는 파일 안에 파이썬 스크립트를 넣을 수 있어서다. FBX·OBJ·GLB와 .rbxmx로 내보내 넣는다.
+MODELS_TEXT = {".obj", ".mtl", ".gltf", ".rbxmx"}
+MODELS_BIN = {".fbx", ".glb"}   # .fbx는 글(ASCII) 형식이면 글로 검사한다
+ASSET_EXTS = IMAGES | MODELS_TEXT | MODELS_BIN | {".md", ".txt"}
+ASSET_REQUIRED = IMAGES | MODELS_TEXT | MODELS_BIN   # assets/에 적어도 하나는 있어야 하는 실제 에셋
+GAME_REQUIRED = {".rbxlx", ".rbxmx", ".luau", ".lua", ".json", ".toml"}   # game/에 적어도 하나는 있어야 하는 게임 파일
+TOOLS = ("VARCO", "Blender", "기타")   # 구글 폼 선택지와 같은 문자열
 ALLOWED = {
     "game": TEXT_CODE | IMAGES,
+    "assets": ASSET_EXTS,
     "video": {".mp4"},
-    "sessions": {".md"},
+    "sessions": {".md"} | IMAGES,
     "images": IMAGES,
     "scripts": {".py", ".md"},
+    "docs": {".md"},
     ".claude": {".md"},
     ".github": {".yml", ".yaml"},
 }
 ROOT_FILES = {"README.md", "PROCESS.md", "SUBMISSION.json", "AGENTS.md", ".gitignore", "LICENSE"}
-TEMPLATE_DIRS = {"scripts", ".github", ".claude"}  # 템플릿이 준 폴더. 내용은 운영진 쪽에서 원본과 바이트 비교한다
+TEMPLATE_DIRS = {"scripts", ".github", ".claude", "docs"}  # 템플릿이 준 폴더. 내용은 운영진 쪽에서 원본과 바이트 비교한다
 
 DANGEROUS_MAGIC = [
     (b"MZ", "Windows 실행 파일(exe/dll)"),
@@ -118,10 +131,16 @@ def normalize(text):
     return unicodedata.normalize("NFKC", text)
 
 
-def scrub(text):
-    """개인정보·비밀값을 꼬리표로 바꾼다(export_sessions가 쓴다)."""
+def scrub(text, in_game=False):
+    """개인정보·비밀값을 꼬리표로 바꾼다(export_sessions·organize가 쓴다).
+
+    in_game=True면 게임·3D 파일용: 키·쿠키·이메일·내 컴퓨터 경로만 지우고, 숫자형 규칙(전화·카드·IP 등)은
+    좌표·ID를 망가뜨리지 않게 건너뛴다.
+    """
     text = normalize(text)
-    for _name, pat, rep, _opt in RULES:
+    for _name, pat, rep, opt in RULES:
+        if in_game and opt in ("text", "scrub"):
+            continue
         text = pat.sub(lambda m, rep=rep: m.group(0) if m.group(0) in PII_ALLOW else m.expand(rep), text)
     return text
 
@@ -268,6 +287,47 @@ def image_problems(path, ext):
     return None
 
 
+def image_has_metadata(path, ext):
+    """사진 정보(EXIF — 찍은 위치가 들어갈 수 있다)가 남아 있는지 본다."""
+    data = path.read_bytes()[:256 * 1024]
+    if ext in (".jpg", ".jpeg"):
+        return b"Exif\x00\x00" in data
+    if ext == ".png":
+        return b"eXIf" in data
+    if ext == ".webp":
+        return b"EXIF" in data[:4096]
+    return False
+
+
+def model_problems(path, ext):
+    """바이너리 3D 파일을 본다. 돌려주는 값: (문제, 주의). 글(ASCII) FBX면 (None, None) — 글 검사로 넘긴다.
+
+    GLB는 조각(chunk) 크기를 끝까지 따라가 덧붙인 데이터를 잡는다. 압축된 텍스처가 든 바이너리는
+    우연히 zip 머리와 같은 4바이트가 나올 수 있어서, 숨은 파일 흔적은 문제가 아니라 주의로 알린다.
+    """
+    data = path.read_bytes()
+    if ext == ".glb":
+        if not data.startswith(b"glTF"):
+            return "확장자는 .glb인데 실제 glTF 바이너리가 아니다", None
+        if int.from_bytes(data[8:12], "little") != len(data):
+            return "GLB 크기 정보와 파일 크기가 다르다(덧붙인 데이터 의심)", None
+        pos = 12
+        while pos < len(data):
+            if pos + 8 > len(data):
+                return "GLB 끝에 조각이 남아 있다(덧붙인 데이터 의심)", None
+            n = int.from_bytes(data[pos:pos + 4], "little")
+            if pos + 8 + n > len(data):
+                return "GLB 조각 크기가 맞지 않는다(손상 또는 덧붙인 데이터)", None
+            pos += 8 + n
+    elif ext == ".fbx":
+        if not data.startswith(b"Kaydara FBX Binary"):
+            if b"\x00" in data[:4096]:
+                return "확장자는 .fbx인데 실제 FBX 파일이 아니다", None
+            return None, None
+    hit = next((label for magic, label in PAYLOAD_SIGS if magic in data), None)
+    return "", (f"3D 파일 안에 {hit} 머리와 같은 바이트가 있다 — 운영진이 확인한다" if hit else None)
+
+
 # ── 검사 ─────────────────────────────────────────────────────────
 def check(root):
     root = Path(root).resolve()
@@ -335,7 +395,19 @@ def check(root):
             msg = image_problems(p, ext)
             if msg:
                 problems.append(f"{r}: {msg}")
+            elif image_has_metadata(p, ext):
+                warnings.append(f"{r}: 사진 정보(EXIF, 찍은 위치가 들어갈 수 있다)가 남아 있다 — scripts/organize.py로 복사하면 지워진다")
+            if top == "sessions":
+                warnings.append(f"{r}: 스크린샷 속 이름·이메일·얼굴은 자동으로 못 찾는다 — 직접 확인하세요")
             continue
+        if ext in MODELS_BIN:
+            msg, note = model_problems(p, ext)
+            if msg:
+                problems.append(f"{r}: {msg}")
+            if note:
+                warnings.append(f"{r}: {note}")
+            if msg is not None:
+                continue   # 바이너리 3D 파일은 글 검사를 하지 않는다
 
         # 3. 영상
         if ext == ".mp4":
@@ -358,7 +430,9 @@ def check(root):
             problems.append(f"{r}: 글 안에 스크립트·iframe 같은 실행 요소가 있다")
         if top in TEMPLATE_DIRS and len(parts) > 1:
             continue  # 템플릿 파일은 예시 패턴을 담고 있다. 바뀌었는지는 운영진 쪽에서 원본과 비교한다
-        for kind, where in find_pii(text, in_game=(top == "game")):
+        # 게임·3D 파일은 좌표·ID 숫자가 많아 숫자형 개인정보(전화·카드 등)는 보지 않는다. 설명 글(.md·.txt)은 다 본다
+        numeric_ok = top == "game" or (top == "assets" and ext not in (".md", ".txt"))
+        for kind, where in find_pii(text, in_game=numeric_ok):
             problems.append(f"{r}: {kind} 발견 — {where}")
 
     if total > MAX_TOTAL:
@@ -374,9 +448,16 @@ def check(root):
             if not isinstance(meta, dict):
                 meta = {}
                 problems.append("SUBMISSION.json은 { … } 형태여야 한다(템플릿 칸을 채워 주세요)")
-            for key in ("nickname", "coding_ai", "roblox_game_url", "one_line"):
+            for key in ("nickname", "tool", "roblox_game_url", "one_line"):
                 if not str(meta.get(key, "")).strip():
                     problems.append(f"SUBMISSION.json: '{key}' 칸이 비었다")
+            tool = meta.get("tool", "")
+            tool = unicodedata.normalize("NFC", tool) if isinstance(tool, str) else tool
+            if tool and tool not in TOOLS:
+                problems.append(f"SUBMISSION.json: tool은 {' · '.join(chr(34) + t + chr(34) for t in TOOLS)} 중 하나를 그대로 써야 한다"
+                                f"(지금 값: {str(tool)[:20]!r})")
+            if tool == "기타" and not str(meta.get("tool_other", "")).strip():
+                warnings.append("SUBMISSION.json: tool이 '기타'면 tool_other에 쓴 도구 이름을 적어 주세요")
             url = str(meta.get("roblox_game_url", ""))
             if url and not re.match(r"^https://(?:(?:www\.)?roblox\.com/(?:[a-z]{2}(?:-[a-z]{2})?/)?(?:games|share)"
                                     r"|create\.roblox\.com/dashboard/creations/experiences/\d+)", url):
@@ -390,15 +471,19 @@ def check(root):
 
     if not (root / "video" / "play.mp4").is_file():
         problems.append("video/play.mp4(플레이 영상)가 없다 — scripts/prepare_video.py로 만드세요")
-    if not has("sessions", "*.md"):
-        problems.append("sessions 폴더에 AI 대화 기록이 없다")
-    if not has("game", "*"):
-        problems.append("game 폴더에 게임 소스가 없다")
+    if not has("sessions", "*"):
+        problems.append("sessions 폴더에 작업 기록(대화 기록·메모·스크린샷)이 없다")
+    gd = root / "game"
+    if not (gd.is_dir() and any(x.is_file() and x.suffix.lower() in GAME_REQUIRED for x in gd.rglob("*"))):
+        problems.append("game 폴더가 없거나 비었다 — 게임 파일(.rbxlx 또는 소스)을 넣으세요")
+    ad = root / "assets"
+    if not (ad.is_dir() and any(x.is_file() and x.suffix.lower() in ASSET_REQUIRED for x in ad.rglob("*"))):
+        problems.append("assets 폴더가 없거나 에셋 파일(이미지·.fbx·.obj·.glb·.gltf·.rbxmx)이 없다 — game/과 assets/ 둘 다 있어야 한다")
     proc = root / "PROCESS.md"
     ptext = (read_text_file(proc) or "") if proc.is_file() else ""
     if len(ptext.strip()) < 200:
         problems.append("PROCESS.md(과정 정리)가 없거나 너무 짧다")
-    elif re.search(r"(?m)^\s*\(여기에", ptext):
+    elif "(여기에" in ptext:
         problems.append("PROCESS.md에 아직 채우지 않은 '(여기에 …)' 칸이 있다")
 
     return {"root": str(root), "files": len(files), "total_mb": round(total / MB, 1),
